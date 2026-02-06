@@ -491,22 +491,26 @@ class SamsungHealthManager(
     
     /**
      * Get SDK DataType name for a flutter type ID.
+     * Records use "SH_" prefix (Samsung Health) similar to Apple's "HK" prefix.
+     * Workouts and Sleep use uppercase without prefix.
      */
     private fun getDataTypeName(typeId: String): String {
         return when (typeId) {
-            "steps" -> "STEPS"
-            "heartRate" -> "HEART_RATE"
+            // Records - with SH_ prefix
+            "steps" -> "SH_STEPS"
+            "heartRate" -> "SH_HEART_RATE"
+            "oxygenSaturation" -> "SH_BLOOD_OXYGEN"
+            "bloodGlucose" -> "SH_BLOOD_GLUCOSE"
+            "bloodPressure", "bloodPressureSystolic", "bloodPressureDiastolic" -> "SH_BLOOD_PRESSURE"
+            "bodyTemperature" -> "SH_BODY_TEMPERATURE"
+            "flightsClimbed" -> "SH_FLOORS_CLIMBED"
+            "bodyMass", "bodyFatPercentage", "leanBodyMass" -> "SH_BODY_COMPOSITION"
+            "activeEnergy" -> "SH_ACTIVITY_SUMMARY"
+            "water" -> "SH_WATER_INTAKE"
+            // Workouts and Sleep - without SH_ prefix
             "sleep" -> "SLEEP"
             "workout" -> "EXERCISE"
-            "oxygenSaturation" -> "BLOOD_OXYGEN"
-            "bloodGlucose" -> "BLOOD_GLUCOSE"
-            "bloodPressure", "bloodPressureSystolic", "bloodPressureDiastolic" -> "BLOOD_PRESSURE"
-            "bodyTemperature" -> "BODY_TEMPERATURE"
-            "flightsClimbed" -> "FLOORS_CLIMBED"
-            "bodyMass", "bodyFatPercentage", "leanBodyMass" -> "BODY_COMPOSITION"
-            "activeEnergy" -> "ACTIVITY_SUMMARY"
-            "water" -> "WATER_INTAKE"
-            else -> typeId.uppercase()
+            else -> "SH_${typeId.uppercase()}"
         }
     }
     

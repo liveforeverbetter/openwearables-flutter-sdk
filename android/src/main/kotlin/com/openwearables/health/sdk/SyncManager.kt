@@ -67,7 +67,14 @@ class SyncManager(
         // Sync state file
         private const val SYNC_STATE_DIR = "health_sync_state"
         private const val SYNC_STATE_FILE = "state.json"
+        
+        // Provider identifiers for sync endpoint
+        const val PROVIDER_SAMSUNG = "samsung"
+        // Future providers: const val PROVIDER_GOOGLE_FIT = "google_fit"
     }
+
+    // Current provider - can be changed for other providers in the future
+    private var currentProvider: String = PROVIDER_SAMSUNG
 
     private val syncPrefs: SharedPreferences by lazy {
         context.getSharedPreferences(SYNC_PREFS_NAME, Context.MODE_PRIVATE)
@@ -465,8 +472,9 @@ class SyncManager(
 
     /**
      * Build payload with UNIVERSAL structure for all data types.
-     * Every sample in each list has the SAME keys - backend can parse uniformly.
+     * Follows Open Wearables Samsung Health SDK integration spec.
      * 
+     * Top level: { provider, sdk_version, app_version, data }
      * records[]: { uid, dataType, startTime, endTime, dataSource, device, values[] }
      * workouts[]: { uid, dataType, exerciseType, startTime, endTime, dataSource, device, values[], sessions[] }
      * sleep[]:    { uid, dataType, startTime, endTime, dataSource, device, values[], stages[] }
@@ -537,10 +545,13 @@ class SyncManager(
     
     /**
      * Build UNIVERSAL workout sample structure.
-     * All workouts have: exerciseType, values[], sessions[]
+     * All workouts have: dataType="EXERCISE", exerciseType, values[], sessions[]
      */
     private fun buildWorkoutSample(base: Map<String, Any?>, record: HealthDataRecord): Map<String, Any?> {
         val sample = base.toMutableMap()
+        
+        // Set dataType to "EXERCISE" for workouts
+        sample["dataType"] = "EXERCISE"
         
         // Extract exerciseType to top level (always present for workouts)
         sample["exerciseType"] = record.fields["EXERCISE_TYPE"] ?: "UNKNOWN"
@@ -573,10 +584,13 @@ class SyncManager(
     
     /**
      * Build UNIVERSAL sleep sample structure.
-     * All sleep records have: values[], stages[]
+     * All sleep records have: dataType="SLEEP", values[], stages[]
      */
     private fun buildSleepSample(base: Map<String, Any?>, record: HealthDataRecord): Map<String, Any?> {
         val sample = base.toMutableMap()
+        
+        // Set dataType to "SLEEP" for sleep records
+        sample["dataType"] = "SLEEP"
         
         // Extract sessions/stages separately
         val sessions = record.fields["SESSIONS"] as? List<*> ?: emptyList<Any>()
@@ -589,8 +603,10 @@ class SyncManager(
                 if (sleepStages != null) {
                     for (stage in sleepStages) {
                         if (stage is Map<*, *>) {
+                            // Stage value uppercase
+                            val stageValue = (stage["stage"] ?: "UNKNOWN").toString().uppercase()
                             stages.add(mapOf(
-                                "stage" to (stage["stage"] ?: "UNKNOWN"),
+                                "stage" to stageValue,
                                 "startTime" to stage["startTime"],
                                 "endTime" to stage["endTime"]
                             ))
@@ -611,19 +627,20 @@ class SyncManager(
         return sample
     }
 
-    private fun buildSyncEndpoint(baseUrl: String, customSyncUrl: String?, userId: String): String {
+    private fun buildSyncEndpoint(baseUrl: String, customSyncUrl: String?, userId: String, provider: String = currentProvider): String {
         if (customSyncUrl != null) {
-            // If custom URL contains placeholder, use it directly
-            if (customSyncUrl.contains("{user_id}") || customSyncUrl.contains("{userId}")) {
+            // If custom URL contains placeholders, use it directly
+            if (customSyncUrl.contains("{user_id}") || customSyncUrl.contains("{userId}") || customSyncUrl.contains("{provider}")) {
                 return customSyncUrl
                     .replace("{userId}", userId)
                     .replace("{user_id}", userId)
+                    .replace("{provider}", provider)
             }
             // Otherwise treat as base URL and append path
             val normalizedBase = customSyncUrl.trimEnd('/')
-            return "$normalizedBase/sdk/users/$userId/sync/samsung"
+            return "$normalizedBase/sdk/users/$userId/sync/$provider"
         }
-        return "$baseUrl/api/v1/sdk/users/$userId/sync/samsung"
+        return "$baseUrl/api/v1/sdk/users/$userId/sync/$provider"
     }
 
     // MARK: - Anchors (timestamps for incremental sync)
