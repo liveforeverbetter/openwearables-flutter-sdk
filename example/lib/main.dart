@@ -1,9 +1,31 @@
-import 'dart:io';
+import 'dart:convert';
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
-import 'package:open_wearables_health_sdk/open_wearables_health_sdk.dart';
+import 'package:http/http.dart' as http;
 import 'package:open_wearables_health_sdk/health_data_type.dart';
+import 'package:open_wearables_health_sdk/open_wearables_health_sdk.dart';
+
+// Open Wearables design tokens
+class OWColors {
+  static const background = Color(0xFF09090B); // zinc-950
+  static const surface = Color(0xFF18181B); // zinc-900
+  static const surfaceLight = Color(0xFF27272A); // zinc-800
+  static const border = Color(0xFF27272A); // zinc-800
+  static const borderSubtle = Color(0xFF18181B); // zinc-900
+  static const textPrimary = Color(0xFFFFFFFF);
+  static const textSecondary = Color(0xFFA1A1AA); // zinc-400
+  static const textLabel = Color(0xFFD4D4D8); // zinc-300
+  static const textMuted = Color(0xFF71717A); // zinc-500
+  static const textFooter = Color(0xFF52525B); // zinc-600
+  static const accent = Color(0xFFE4E4E7); // zinc-200
+  static const accentIndigo = Color(0xFF6366F1); // indigo
+  static const success = Color(0xFF4ADE80); // green-400
+  static const error = Color(0xFFEF4444); // red-500
+  static const buttonBg = Color(0xFFFFFFFF);
+  static const buttonText = Color(0xFF000000);
+  static const buttonHover = Color(0xFFE4E4E7); // zinc-200
+}
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -50,17 +72,22 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Health Sync',
+      title: 'Open Wearables',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFFFF2D55), brightness: Brightness.light),
-        scaffoldBackgroundColor: const Color(0xFFF2F2F7),
+        brightness: Brightness.dark,
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: OWColors.accent,
+          brightness: Brightness.dark,
+          surface: OWColors.background,
+        ),
+        scaffoldBackgroundColor: OWColors.background,
         appBarTheme: const AppBarTheme(
-          backgroundColor: Color(0xFFF2F2F7),
+          backgroundColor: OWColors.background,
           elevation: 0,
           scrolledUnderElevation: 0,
           titleTextStyle: TextStyle(
-            color: Colors.black,
+            color: OWColors.textPrimary,
             fontSize: 34,
             fontWeight: FontWeight.bold,
             letterSpacing: -0.5,
@@ -81,9 +108,8 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  final _customUrlController = TextEditingController(text: 'https://api.openwearables.io/api/v1/');
-  final _userIdController = TextEditingController();
-  final _tokenController = TextEditingController();
+  final _hostController = TextEditingController();
+  final _invitationCodeController = TextEditingController();
 
   bool _isLoading = false;
   String _statusMessage = '';
@@ -104,13 +130,36 @@ class _HomePageState extends State<HomePage> {
       final timestamp = DateTime.now().toIso8601String().split('T').last.split('.').first;
       _addLog('$timestamp $message');
     });
+
+    // Handle auth errors (401) - sign out and redirect to login
+    MethodChannelOpenWearablesHealthSdk.authErrorStream.listen((error) {
+      final statusCode = error['statusCode'];
+      final message = error['message'] ?? 'Authentication error';
+      _addLog('🔒 Auth error: $statusCode - $message');
+      _handleAuthError();
+    });
+  }
+
+  Future<void> _handleAuthError() async {
+    // Sign out and reset state
+    try {
+      await OpenWearablesHealthSdk.signOut();
+    } catch (_) {}
+
+    if (mounted) {
+      setState(() {
+        _isSignedIn = false;
+        _isAuthorized = false;
+        _isSyncing = false;
+        _statusMessage = 'Session expired - please sign in again';
+      });
+    }
   }
 
   @override
   void dispose() {
-    _userIdController.dispose();
-    _tokenController.dispose();
-    _customUrlController.dispose();
+    _hostController.dispose();
+    _invitationCodeController.dispose();
     super.dispose();
   }
 
@@ -119,21 +168,20 @@ class _HomePageState extends State<HomePage> {
     try {
       final credentials = await OpenWearablesHealthSdk.getStoredCredentials();
       final hasUserId = credentials['userId'] != null && (credentials['userId'] as String).isNotEmpty;
-      final hasAccessToken = credentials['accessToken'] != null && (credentials['accessToken'] as String).isNotEmpty;
+      final hasAccessToken =
+          (credentials['accessToken'] != null && (credentials['accessToken'] as String).isNotEmpty) ||
+          (credentials['apiKey'] != null && (credentials['apiKey'] as String).isNotEmpty);
+      final hasHost = credentials['host'] != null && (credentials['host'] as String).isNotEmpty;
       final wasSyncActive = credentials['isSyncActive'] == true;
 
-      setState(() {
-        if (credentials['userId'] != null) {
-          _userIdController.text = credentials['userId'] as String;
-        }
-        if (credentials['accessToken'] != null) {
-          _tokenController.text = credentials['accessToken'] as String;
-        }
-      });
+      if (hasHost) {
+        setState(() {
+          _hostController.text = credentials['host'] as String;
+        });
+      }
 
-      if (hasUserId && hasAccessToken && wasSyncActive) {
-        final storedCustomUrl = credentials['customSyncUrl'] as String?;
-        await OpenWearablesHealthSdk.configure(environment: OpenWearablesHealthSdkEnvironment.production, customSyncUrl: storedCustomUrl);
+      if (hasUserId && hasAccessToken && hasHost && wasSyncActive) {
+        await OpenWearablesHealthSdk.configure(host: credentials['host'] as String);
         _checkStatus();
         _setStatus('Session restored');
       }
@@ -144,40 +192,53 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Future<void> _loginWithToken() async {
-    final userId = _userIdController.text.trim();
-    final token = _tokenController.text.trim();
-    final customUrl = _customUrlController.text.trim();
+  Future<void> _connectWithInvitationCode() async {
+    final host = _hostController.text.trim();
+    final invitationCode = _invitationCodeController.text.trim();
 
-    if (userId.isEmpty || token.isEmpty) {
-      _setStatus('Please fill User ID and Token');
+    if (host.isEmpty || invitationCode.isEmpty) {
+      _setStatus('Please fill Host and Invitation Code');
       return;
     }
 
     setState(() => _isLoading = true);
 
     try {
-      // If URL contains {user_id} placeholder, use it directly; otherwise treat as base URL ending with /api/v1/
-      final String fullSyncUrl;
-      if (customUrl.contains('{user_id}')) {
-        fullSyncUrl = customUrl;
-      } else {
-        final baseUrl = customUrl.isNotEmpty ? customUrl : 'https://api.openwearables.io/api/v1/';
-        // Remove trailing slash if present, then append path
-        final normalizedBase = baseUrl.endsWith('/') ? baseUrl.substring(0, baseUrl.length - 1) : baseUrl;
-        // Use platform-specific endpoint: samsung for Android, apple for iOS
-        final provider = Platform.isAndroid ? 'samsung' : 'apple';
-        fullSyncUrl = '$normalizedBase/sdk/users/{user_id}/sync/$provider';
+      _setStatus('Redeeming invitation code...');
+
+      // Build redeem URL: {host}/api/v1/invitation-code/redeem
+      final h = host.endsWith('/') ? host.substring(0, host.length - 1) : host;
+      final redeemUrl = Uri.parse('$h/api/v1/invitation-code/redeem');
+
+      final response = await http.post(
+        redeemUrl,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'code': invitationCode}),
+      );
+
+      if (response.statusCode != 200) {
+        _setStatus('Redeem failed (${response.statusCode}): ${response.body}');
+        return;
       }
-      await OpenWearablesHealthSdk.configure(environment: OpenWearablesHealthSdkEnvironment.production, customSyncUrl: fullSyncUrl);
+
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      final accessToken = data['access_token'] as String?;
+      final refreshToken = data['refresh_token'] as String?;
+      final userId = data['user_id'] as String?;
+
+      if (accessToken == null || refreshToken == null || userId == null) {
+        _setStatus('Invalid response from server');
+        return;
+      }
+
+      // Configure SDK with host
+      await OpenWearablesHealthSdk.configure(host: host);
       _checkStatus();
 
+      // Sign in with the received credentials
       _setStatus('Signing in...');
-      final authToken = token.startsWith('Bearer ') ? token : 'Bearer $token';
-      await OpenWearablesHealthSdk.signIn(
-        userId: userId,
-        accessToken: authToken,
-      );
+      final bearerToken = accessToken.startsWith('Bearer ') ? accessToken : 'Bearer $accessToken';
+      await OpenWearablesHealthSdk.signIn(userId: userId, accessToken: bearerToken, refreshToken: refreshToken);
 
       _setStatus('Connected successfully');
       _checkStatus();
@@ -211,7 +272,7 @@ class _HomePageState extends State<HomePage> {
       setState(() {
         _isAuthorized = false;
         _isSyncing = false;
-        _tokenController.clear();
+        _invitationCodeController.clear();
       });
     } catch (e) {
       _setStatus('Error: $e');
@@ -282,18 +343,21 @@ class _HomePageState extends State<HomePage> {
     return Scaffold(
       body: CustomScrollView(
         slivers: [
-          // Large title app bar (Apple style)
           SliverAppBar(
             pinned: true,
             expandedHeight: 100,
+            backgroundColor: OWColors.background,
             flexibleSpace: FlexibleSpaceBar(
-              title: const Text('Health Sync'),
+              title: const Text(
+                'Open Wearables',
+                style: TextStyle(color: OWColors.textPrimary, fontSize: 20, fontWeight: FontWeight.w600),
+              ),
               titlePadding: const EdgeInsets.only(left: 20, bottom: 16),
             ),
             actions: [
               CupertinoButton(
                 padding: const EdgeInsets.all(12),
-                child: const Icon(CupertinoIcons.doc_text, size: 24),
+                child: const Icon(CupertinoIcons.doc_text, size: 24, color: OWColors.textSecondary),
                 onPressed: () => Navigator.of(context).push(CupertinoPageRoute(builder: (c) => const LogsPage())),
               ),
             ],
@@ -305,7 +369,6 @@ class _HomePageState extends State<HomePage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Status Card
                   _buildStatusCard(),
                   const SizedBox(height: 24),
 
@@ -325,13 +388,12 @@ class _HomePageState extends State<HomePage> {
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: OWColors.surface.withValues(alpha: 0.7),
         borderRadius: BorderRadius.circular(16),
-        boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.04), blurRadius: 10, offset: const Offset(0, 2))],
+        border: Border.all(color: OWColors.border),
       ),
       child: Row(
         children: [
-          // Status indicator ring
           Container(
             width: 56,
             height: 56,
@@ -341,9 +403,16 @@ class _HomePageState extends State<HomePage> {
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
                 colors: _isSyncing
-                    ? [const Color(0xFF34C759), const Color(0xFF30D158)]
-                    : [const Color(0xFFFF3B30), const Color(0xFFFF453A)],
+                    ? [OWColors.success, OWColors.success.withValues(alpha: 0.7)]
+                    : [OWColors.error, OWColors.error.withValues(alpha: 0.7)],
               ),
+              boxShadow: [
+                BoxShadow(
+                  color: (_isSyncing ? OWColors.success : OWColors.error).withValues(alpha: 0.3),
+                  blurRadius: 12,
+                  spreadRadius: 2,
+                ),
+              ],
             ),
             child: Icon(
               _isSyncing ? CupertinoIcons.checkmark_alt : CupertinoIcons.xmark,
@@ -358,19 +427,23 @@ class _HomePageState extends State<HomePage> {
               children: [
                 Text(
                   _isSyncing ? 'Syncing Active' : 'Not Syncing',
-                  style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w600, letterSpacing: -0.3),
+                  style: const TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: -0.3,
+                    color: OWColors.textPrimary,
+                  ),
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  _isSignedIn
-                      ? 'Connected as ${_userIdController.text.length > 8 ? '${_userIdController.text.substring(0, 8)}...' : _userIdController.text}'
-                      : 'Not connected',
-                  style: TextStyle(fontSize: 15, color: Colors.grey[600], letterSpacing: -0.2),
+                  _isSignedIn ? 'Connected to ${_hostController.text}' : 'Not connected',
+                  style: const TextStyle(fontSize: 15, color: OWColors.textSecondary, letterSpacing: -0.2),
+                  overflow: TextOverflow.ellipsis,
                 ),
               ],
             ),
           ),
-          if (_isLoading) const CupertinoActivityIndicator(),
+          if (_isLoading) const CupertinoActivityIndicator(color: OWColors.accent),
         ],
       ),
     );
@@ -379,9 +452,9 @@ class _HomePageState extends State<HomePage> {
   Widget _buildLoginSection() {
     return Container(
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: OWColors.surface.withValues(alpha: 0.7),
         borderRadius: BorderRadius.circular(16),
-        boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.04), blurRadius: 10, offset: const Offset(0, 2))],
+        border: Border.all(color: OWColors.border),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -390,28 +463,46 @@ class _HomePageState extends State<HomePage> {
             padding: EdgeInsets.fromLTRB(20, 20, 20, 12),
             child: Text(
               'CONNECT',
-              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Colors.grey, letterSpacing: 0.5),
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: OWColors.textMuted,
+                letterSpacing: 0.5,
+              ),
             ),
           ),
-          _buildTextField(controller: _userIdController, placeholder: 'User ID', icon: CupertinoIcons.person),
-          _buildDivider(),
           _buildTextField(
-            controller: _tokenController,
-            placeholder: 'Token',
-            icon: CupertinoIcons.lock,
-            obscureText: true,
+            controller: _hostController,
+            placeholder: 'Host (e.g. https://api.example.com)',
+            icon: CupertinoIcons.globe,
+            keyboardType: TextInputType.url,
           ),
           _buildDivider(),
-          _buildTextField(controller: _customUrlController, placeholder: 'API URL', icon: CupertinoIcons.link),
+          _buildTextField(
+            controller: _invitationCodeController,
+            placeholder: 'Invitation Code',
+            icon: CupertinoIcons.ticket,
+          ),
           Padding(
             padding: const EdgeInsets.all(20),
             child: SizedBox(
               width: double.infinity,
-              child: CupertinoButton.filled(
-                onPressed: _isLoading ? null : _loginWithToken,
-                borderRadius: BorderRadius.circular(12),
+              child: ElevatedButton(
+                onPressed: _isLoading ? null : _connectWithInvitationCode,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: OWColors.buttonBg,
+                  foregroundColor: OWColors.buttonText,
+                  disabledBackgroundColor: OWColors.buttonHover,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  elevation: 0,
+                ),
                 child: _isLoading
-                    ? const CupertinoActivityIndicator(color: Colors.white)
+                    ? const SizedBox(
+                        height: 20,
+                        width: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: OWColors.buttonText),
+                      )
                     : const Text('Connect', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600)),
               ),
             ),
@@ -426,22 +517,26 @@ class _HomePageState extends State<HomePage> {
     required String placeholder,
     required IconData icon,
     bool obscureText = false,
+    TextInputType? keyboardType,
   }) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
       child: Row(
         children: [
-          Icon(icon, color: Colors.grey[400], size: 24),
+          Icon(icon, color: OWColors.textMuted, size: 24),
           const SizedBox(width: 12),
           Expanded(
             child: CupertinoTextField(
               controller: controller,
               placeholder: placeholder,
               obscureText: obscureText,
+              keyboardType: keyboardType,
+              autocorrect: false,
               padding: EdgeInsets.zero,
               decoration: const BoxDecoration(),
-              style: const TextStyle(fontSize: 17),
-              placeholderStyle: TextStyle(fontSize: 17, color: Colors.grey[400]),
+              style: const TextStyle(fontSize: 17, color: OWColors.textPrimary),
+              placeholderStyle: const TextStyle(fontSize: 17, color: OWColors.textMuted),
+              cursorColor: OWColors.accent,
             ),
           ),
         ],
@@ -452,23 +547,23 @@ class _HomePageState extends State<HomePage> {
   Widget _buildDivider() {
     return Padding(
       padding: const EdgeInsets.only(left: 56),
-      child: Divider(height: 1, color: Colors.grey[200]),
+      child: Divider(height: 1, color: OWColors.border.withValues(alpha: 0.5)),
     );
   }
 
   Widget _buildActionsSection() {
     return Container(
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: OWColors.surface.withValues(alpha: 0.7),
         borderRadius: BorderRadius.circular(16),
-        boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.04), blurRadius: 10, offset: const Offset(0, 2))],
+        border: Border.all(color: OWColors.border),
       ),
       child: Column(
         children: [
           if (!_isAuthorized)
             _buildActionTile(
               icon: CupertinoIcons.heart,
-              iconColor: const Color(0xFFFF2D55),
+              iconColor: OWColors.accent,
               title: 'Authorize Health',
               subtitle: 'Grant access to health data',
               onTap: _requestAuthorization,
@@ -476,7 +571,7 @@ class _HomePageState extends State<HomePage> {
           if (_isAuthorized) ...[
             _buildActionTile(
               icon: _isSyncing ? CupertinoIcons.pause : CupertinoIcons.play,
-              iconColor: const Color(0xFF34C759),
+              iconColor: OWColors.success,
               title: _isSyncing ? 'Stop Sync' : 'Start Sync',
               subtitle: _isSyncing ? 'Background sync is active' : 'Begin syncing health data',
               onTap: _isSyncing ? _stopBackgroundSync : _startBackgroundSync,
@@ -484,7 +579,7 @@ class _HomePageState extends State<HomePage> {
             _buildDivider(),
             _buildActionTile(
               icon: CupertinoIcons.arrow_2_circlepath,
-              iconColor: const Color(0xFF007AFF),
+              iconColor: OWColors.accentIndigo,
               title: 'Sync Now',
               subtitle: 'Force an immediate sync',
               onTap: _syncNow,
@@ -493,7 +588,7 @@ class _HomePageState extends State<HomePage> {
           _buildDivider(),
           _buildActionTile(
             icon: CupertinoIcons.square_arrow_left,
-            iconColor: const Color(0xFFFF3B30),
+            iconColor: OWColors.error,
             title: 'Disconnect',
             subtitle: 'Sign out and stop syncing',
             onTap: _signOut,
@@ -523,7 +618,7 @@ class _HomePageState extends State<HomePage> {
               width: 36,
               height: 36,
               decoration: BoxDecoration(
-                color: iconColor.withValues(alpha: 0.12),
+                color: iconColor.withValues(alpha: 0.15),
                 borderRadius: BorderRadius.circular(8),
               ),
               child: Icon(icon, color: iconColor, size: 20),
@@ -538,15 +633,15 @@ class _HomePageState extends State<HomePage> {
                     style: TextStyle(
                       fontSize: 17,
                       fontWeight: FontWeight.w500,
-                      color: destructive ? const Color(0xFFFF3B30) : Colors.black,
+                      color: destructive ? OWColors.error : OWColors.textPrimary,
                       letterSpacing: -0.2,
                     ),
                   ),
-                  Text(subtitle, style: TextStyle(fontSize: 14, color: Colors.grey[500], letterSpacing: -0.1)),
+                  Text(subtitle, style: const TextStyle(fontSize: 14, color: OWColors.textMuted, letterSpacing: -0.1)),
                 ],
               ),
             ),
-            Icon(CupertinoIcons.chevron_right, color: Colors.grey[300], size: 20),
+            const Icon(CupertinoIcons.chevron_right, color: OWColors.textFooter, size: 20),
           ],
         ),
       ),
@@ -555,30 +650,26 @@ class _HomePageState extends State<HomePage> {
 
   Widget _buildStatusMessage() {
     final isError = _statusMessage.toLowerCase().contains('error') || _statusMessage.toLowerCase().contains('failed');
+    final statusColor = isError ? OWColors.error : OWColors.success;
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: isError
-            ? const Color(0xFFFF3B30).withValues(alpha: 0.1)
-            : const Color(0xFF34C759).withValues(alpha: 0.1),
+        color: statusColor.withValues(alpha: 0.1),
         borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: statusColor.withValues(alpha: 0.25)),
       ),
       child: Row(
         children: [
           Icon(
             isError ? CupertinoIcons.exclamationmark_circle : CupertinoIcons.checkmark_circle,
-            color: isError ? const Color(0xFFFF3B30) : const Color(0xFF34C759),
+            color: statusColor,
             size: 22,
           ),
           const SizedBox(width: 12),
           Expanded(
             child: Text(
               _statusMessage,
-              style: TextStyle(
-                fontSize: 15,
-                color: isError ? const Color(0xFFFF3B30) : const Color(0xFF34C759),
-                fontWeight: FontWeight.w500,
-              ),
+              style: TextStyle(fontSize: 15, color: statusColor, fontWeight: FontWeight.w500),
             ),
           ),
         ],
@@ -630,22 +721,22 @@ class _LogsPageState extends State<LogsPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF2F2F7),
+      backgroundColor: OWColors.background,
       appBar: AppBar(
-        backgroundColor: const Color(0xFFF2F2F7),
+        backgroundColor: OWColors.background,
         title: const Text(
           'Sync Logs',
-          style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600, color: Colors.black),
+          style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600, color: OWColors.textPrimary),
         ),
         leading: CupertinoButton(
           padding: EdgeInsets.zero,
-          child: const Icon(CupertinoIcons.back, color: Color(0xFF007AFF)),
+          child: const Icon(CupertinoIcons.back, color: OWColors.accent),
           onPressed: () => Navigator.of(context).pop(),
         ),
         actions: [
           CupertinoButton(
             padding: const EdgeInsets.all(12),
-            child: const Icon(CupertinoIcons.trash, color: Color(0xFFFF3B30)),
+            child: const Icon(CupertinoIcons.trash, color: OWColors.error),
             onPressed: () {
               appLogs.clear();
               _cachedFilteredLogs = [];
@@ -663,6 +754,10 @@ class _LogsPageState extends State<LogsPage> {
               controller: _searchController,
               placeholder: 'Search in logs...',
               onChanged: (value) => setState(() => _searchQuery = value),
+              style: const TextStyle(color: OWColors.textPrimary),
+              backgroundColor: OWColors.surface,
+              placeholderStyle: const TextStyle(color: OWColors.textMuted),
+              prefixIcon: const Icon(CupertinoIcons.search, color: OWColors.textMuted),
             ),
           ),
           Expanded(
@@ -676,9 +771,9 @@ class _LogsPageState extends State<LogsPage> {
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        Icon(CupertinoIcons.doc_text, size: 48, color: Colors.grey[300]),
+                        const Icon(CupertinoIcons.doc_text, size: 48, color: OWColors.textFooter),
                         const SizedBox(height: 12),
-                        Text('No logs yet', style: TextStyle(fontSize: 17, color: Colors.grey[400])),
+                        const Text('No logs yet', style: TextStyle(fontSize: 17, color: OWColors.textMuted)),
                       ],
                     ),
                   );
@@ -689,9 +784,9 @@ class _LogsPageState extends State<LogsPage> {
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        Icon(CupertinoIcons.search, size: 48, color: Colors.grey[300]),
+                        const Icon(CupertinoIcons.search, size: 48, color: OWColors.textFooter),
                         const SizedBox(height: 12),
-                        Text('No results', style: TextStyle(fontSize: 17, color: Colors.grey[400])),
+                        const Text('No results', style: TextStyle(fontSize: 17, color: OWColors.textMuted)),
                       ],
                     ),
                   );
@@ -701,7 +796,6 @@ class _LogsPageState extends State<LogsPage> {
                   controller: _scrollController,
                   padding: const EdgeInsets.all(16),
                   itemCount: logs.length,
-                  // Optimize rendering
                   addAutomaticKeepAlives: false,
                   addRepaintBoundaries: true,
                   itemBuilder: (context, index) {
@@ -720,7 +814,6 @@ class _LogsPageState extends State<LogsPage> {
   }
 }
 
-// Simplified log item widget for better performance
 class _LogItem extends StatelessWidget {
   final String log;
 
@@ -730,16 +823,20 @@ class _LogItem extends StatelessWidget {
   Widget build(BuildContext context) {
     final Color dotColor;
     if (log.contains('❌')) {
-      dotColor = const Color(0xFFFF3B30);
+      dotColor = OWColors.error;
     } else if (log.contains('✅')) {
-      dotColor = const Color(0xFF34C759);
+      dotColor = OWColors.success;
     } else {
-      dotColor = const Color(0xFFE5E5EA);
+      dotColor = OWColors.textFooter;
     }
 
     return Container(
       padding: const EdgeInsets.all(12),
-      decoration: const BoxDecoration(color: Colors.white, borderRadius: BorderRadius.all(Radius.circular(10))),
+      decoration: BoxDecoration(
+        color: OWColors.surface,
+        borderRadius: const BorderRadius.all(Radius.circular(10)),
+        border: Border.all(color: OWColors.border.withValues(alpha: 0.5)),
+      ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -753,7 +850,7 @@ class _LogItem extends StatelessWidget {
           Expanded(
             child: Text(
               log,
-              style: const TextStyle(fontSize: 13, fontFamily: 'Menlo', color: Color(0xFF666666), height: 1.4),
+              style: const TextStyle(fontSize: 13, fontFamily: 'Menlo', color: OWColors.textSecondary, height: 1.4),
             ),
           ),
         ],
