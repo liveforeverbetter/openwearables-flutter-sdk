@@ -89,13 +89,13 @@ Complete these sections before review:
 
 ## 5. Health And Data Safety Notes
 
-This app syncs health and fitness data using the Open Wearables SDK. Treat the Play submission as a health app, not a generic utility.
+This app is positioned as a wellness and wearable-data sync app, not as a medical, diagnostic, or treatment app. For Play Console declarations, wearable wellness signals such as activity, sleep, heart rate, HRV, recovery, workouts, and body metrics still fall under health and fitness data categories.
 
-In Data safety, review and declare the data types actually collected, transmitted, stored, or shared by the released app. Based on the SDK surface, likely categories include health and fitness data such as activity, heart, respiratory, body, glucose, blood pressure, nutrition, sleep, reproductive health, and workouts.
+In Data safety, review and declare the data types actually collected, transmitted, stored, or shared by the released app. Based on the SDK surface, likely categories include health and fitness data such as activity, heart, respiratory, body, glucose, blood pressure, nutrition, sleep, reproductive health, and workouts. For the first public wellness release, disable or avoid requesting any sensitive categories that are not needed.
 
 In the Health apps declaration, explain:
 
-- The user benefit: user-authorized wearable and health data synchronization into their ForeverBetter account.
+- The user benefit: user-authorized wearable and wellness data synchronization into their ForeverBetter account.
 - Why each requested data type is needed.
 - That access is permission-gated and user initiated.
 - How users can disconnect, stop sync, and delete/export data.
