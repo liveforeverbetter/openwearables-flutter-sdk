@@ -76,7 +76,7 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Open Wearables',
+      title: 'ForeverBetter Connect',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         brightness: Brightness.dark,
@@ -238,8 +238,8 @@ class _HomePageState extends State<HomePage> {
       if (Platform.isAndroid) {
         await _loadAvailableProviders();
         await OpenWearablesHealthSdk.setSyncNotification(
-          title: '🏃 Open Wearables',
-          text: '⚡ Sync in progress — keeping your health data fresh 💪',
+          title: 'ForeverBetter Connect',
+          text: 'Health sync in progress',
         );
       }
     } catch (e, stackTrace) {
@@ -494,7 +494,7 @@ class _HomePageState extends State<HomePage> {
             backgroundColor: OWColors.background,
             flexibleSpace: FlexibleSpaceBar(
               title: const Text(
-                'Open Wearables',
+                'ForeverBetter Connect',
                 style: TextStyle(color: OWColors.textPrimary, fontSize: 20, fontWeight: FontWeight.w600),
               ),
               titlePadding: const EdgeInsets.only(left: 20, bottom: 16),
