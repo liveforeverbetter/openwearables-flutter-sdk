@@ -1,8 +1,10 @@
 # Google Play Release Runbook
 
-This repo publishes the Android app from the Flutter example project:
+This repo is a Flutter plugin/SDK repo, so Flutter keeps the runnable demo app in:
 
 `example/`
+
+For Google Play, that `example/` directory is the Android application module we are publishing as `ForeverBetter Connect`. The word "example" is a Flutter project-layout convention here; the release signing key, package id, and generated `.aab` are real release artifacts.
 
 Current planned Play identity:
 
@@ -28,6 +30,8 @@ This creates ignored local files:
 
 Back both up securely. The upload key is required for future Play releases.
 
+The generated key is a real Android upload key. Do not commit it. Do not regenerate it after the first Play upload unless you intentionally rotate the upload key through Play Console.
+
 Alternatively, set these environment variables before building:
 
 ```sh
@@ -46,6 +50,16 @@ scripts/build-android-release.sh
 The signed bundle is written to:
 
 `example/build/app/outputs/bundle/release/app-release.aab`
+
+To export the upload certificate and view the SHA fingerprints:
+
+```sh
+scripts/export-android-upload-certificate.sh
+```
+
+This creates:
+
+`example/android/upload-certificate.pem`
 
 ## 3. Create The Play Console App
 
