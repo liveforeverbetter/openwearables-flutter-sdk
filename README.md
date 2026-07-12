@@ -164,6 +164,10 @@ For testing on Samsung devices, enable Developer Mode in Samsung Health: Setting
 ### 1. Configure (once at app start)
 
 ```dart
+// ForeverBetter apps: no host needed — defaults to https://api.foreverbetter.xyz
+await OpenWearablesHealthSdk.configure();
+
+// Custom or self-hosted OpenWearables backend:
 await OpenWearablesHealthSdk.configure(
   host: 'https://api.example.com',
 );

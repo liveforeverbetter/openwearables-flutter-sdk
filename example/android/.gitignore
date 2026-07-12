@@ -13,3 +13,8 @@ key.properties
 upload-certificate.pem
 **/*.keystore
 **/*.jks
+
+# Google Play service account credentials — never commit
+play-store-service-account.json
+fastlane/report.xml
+fastlane/README.md

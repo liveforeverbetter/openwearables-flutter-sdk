@@ -74,10 +74,16 @@ class OpenWearablesHealthSdk {
   /// This must be called before any other method. It will also attempt
   /// to restore any existing user session from secure storage.
   ///
-  /// - [host]: The host URL for the API (e.g. `https://api.example.com`).
-  ///   Only the host part — the SDK appends `/api/v1/...` paths automatically.
+  /// - [host]: The host URL for the API. Defaults to the hosted ForeverBetter
+  ///   health API (`OpenWearablesHealthSdkConfig.defaultHost`). Only the host
+  ///   part — the SDK appends `/api/v1/...` paths automatically. Pass a custom
+  ///   value only for self-hosted or custom OpenWearables backends.
   ///
   /// ```dart
+  /// // ForeverBetter apps: no host needed.
+  /// await OpenWearablesHealthSdk.configure();
+  ///
+  /// // Custom backend:
   /// await OpenWearablesHealthSdk.configure(
   ///   host: 'https://api.example.com',
   /// );
@@ -88,7 +94,7 @@ class OpenWearablesHealthSdk {
   /// }
   /// ```
   static Future<void> configure({
-    required String host,
+    String host = OpenWearablesHealthSdkConfig.defaultHost,
   }) async {
     _config = OpenWearablesHealthSdkConfig(host: host);
 

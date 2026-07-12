@@ -8,6 +8,10 @@ import 'package:open_wearables_health_sdk/health_data_type.dart';
 import 'package:open_wearables_health_sdk/open_wearables_health_sdk.dart';
 import 'package:sentry_flutter/sentry_flutter.dart';
 
+// The ForeverBetter health API host, used for the email OTP sign-in calls
+// below. Device sync goes through the SDK, which defaults to the same host.
+const String _apiHost = OpenWearablesHealthSdkConfig.defaultHost;
+
 // Open Wearables design tokens
 class OWColors {
   static const background = Color(0xFF09090B); // zinc-950
@@ -112,8 +116,10 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  final _hostController = TextEditingController();
-  final _invitationCodeController = TextEditingController();
+  final _emailController = TextEditingController();
+  final _otpController = TextEditingController();
+
+  bool _otpSent = false;
 
   bool _isLoading = false;
   String _statusMessage = '';
@@ -199,8 +205,8 @@ class _HomePageState extends State<HomePage> {
 
   @override
   void dispose() {
-    _hostController.dispose();
-    _invitationCodeController.dispose();
+    _emailController.dispose();
+    _otpController.dispose();
     _customDaysController.dispose();
     super.dispose();
   }
@@ -214,14 +220,7 @@ class _HomePageState extends State<HomePage> {
       final hasAccessToken =
           (credentials['accessToken'] != null && (credentials['accessToken'] as String).isNotEmpty) ||
           (credentials['apiKey'] != null && (credentials['apiKey'] as String).isNotEmpty);
-      final hasHost = credentials['host'] != null && (credentials['host'] as String).isNotEmpty;
       final wasSyncActive = credentials['isSyncActive'] == true;
-
-      if (hasHost) {
-        setState(() {
-          _hostController.text = credentials['host'] as String;
-        });
-      }
 
       // Restore selected provider if stored
       final storedProvider = credentials['provider'] as String?;
@@ -229,8 +228,8 @@ class _HomePageState extends State<HomePage> {
         setState(() => _selectedProviderId = storedProvider);
       }
 
-      if (hasUserId && hasAccessToken && hasHost && wasSyncActive) {
-        await OpenWearablesHealthSdk.configure(host: credentials['host'] as String);
+      if (hasUserId && hasAccessToken && wasSyncActive) {
+        await OpenWearablesHealthSdk.configure();
         _checkStatus();
         _setStatus('Session restored');
       }
@@ -288,37 +287,84 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Future<void> _connectWithInvitationCode() async {
-    final host = _hostController.text.trim();
-    final invitationCode = _invitationCodeController.text.trim();
+  Future<void> _sendOtp() async {
+    final email = _emailController.text.trim();
 
-    if (host.isEmpty || invitationCode.isEmpty) {
-      _setStatus('Please fill Host and Invitation Code');
+    if (email.isEmpty) {
+      _setStatus('Please enter your email');
       return;
     }
 
     setState(() => _isLoading = true);
 
     try {
-      _setStatus('Redeeming invitation code...');
+      _setStatus('Sending sign-in code...');
 
-      // Build redeem URL: {host}/api/v1/invitation-code/redeem
-      final h = host.endsWith('/') ? host.substring(0, host.length - 1) : host;
-      final redeemUrl = Uri.parse('$h/api/v1/invitation-code/redeem');
-
+      final startUrl = Uri.parse('$_apiHost/auth/otp/start');
       final response = await http.post(
-        redeemUrl,
+        startUrl,
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'code': invitationCode}),
+        body: jsonEncode({'email': email}),
       );
 
       if (response.statusCode != 200) {
-        _setStatus('Redeem failed (${response.statusCode}): ${response.body}');
+        _setStatus('Could not send code (${response.statusCode}): ${response.body}');
         Sentry.captureEvent(
           SentryEvent(
-            message: SentryMessage('Invitation code redeem failed'),
+            message: SentryMessage('OTP start failed'),
             level: SentryLevel.warning,
-            tags: {'statusCode': '${response.statusCode}', 'host': host},
+            tags: {'statusCode': '${response.statusCode}', 'host': _apiHost},
+            contexts: Contexts()
+              ..['response_details'] = {
+                'body': response.body.length > 500 ? response.body.substring(0, 500) : response.body,
+              },
+          ),
+        );
+        return;
+      }
+
+      setState(() => _otpSent = true);
+      _setStatus('Enter the 6-digit code emailed to $email');
+    } catch (e, stackTrace) {
+      _setStatus('Failed to send code: $e');
+      Sentry.captureException(
+        e,
+        stackTrace: stackTrace,
+        hint: Hint.withMap({'operation': 'sendOtp'}),
+      );
+    } finally {
+      setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _verifyOtp() async {
+    final email = _emailController.text.trim();
+    final token = _otpController.text.trim();
+
+    if (email.isEmpty || token.isEmpty) {
+      _setStatus('Please enter the code');
+      return;
+    }
+
+    setState(() => _isLoading = true);
+
+    try {
+      _setStatus('Verifying code...');
+
+      final verifyUrl = Uri.parse('$_apiHost/auth/otp/verify');
+      final response = await http.post(
+        verifyUrl,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'email': email, 'token': token, 'type': 'email'}),
+      );
+
+      if (response.statusCode != 200) {
+        _setStatus('Verification failed (${response.statusCode}): ${response.body}');
+        Sentry.captureEvent(
+          SentryEvent(
+            message: SentryMessage('OTP verify failed'),
+            level: SentryLevel.warning,
+            tags: {'statusCode': '${response.statusCode}', 'host': _apiHost},
             contexts: Contexts()
               ..['response_details'] = {
                 'body': response.body.length > 500 ? response.body.substring(0, 500) : response.body,
@@ -331,15 +377,16 @@ class _HomePageState extends State<HomePage> {
       final data = jsonDecode(response.body) as Map<String, dynamic>;
       final accessToken = data['access_token'] as String?;
       final refreshToken = data['refresh_token'] as String?;
-      final userId = data['user_id'] as String?;
+      final user = data['user'] as Map<String, dynamic>?;
+      final userId = user?['id'] as String?;
 
       if (accessToken == null || refreshToken == null || userId == null) {
         _setStatus('Invalid response from server');
         return;
       }
 
-      // Configure SDK with host
-      await OpenWearablesHealthSdk.configure(host: host);
+      // Configure SDK with the ForeverBetter host
+      await OpenWearablesHealthSdk.configure();
       _checkStatus();
 
       // Sign in with the received credentials
@@ -348,6 +395,8 @@ class _HomePageState extends State<HomePage> {
       await OpenWearablesHealthSdk.signIn(userId: userId, accessToken: bearerToken, refreshToken: refreshToken);
 
       Sentry.configureScope((scope) => scope.setUser(SentryUser(id: userId)));
+      setState(() => _otpSent = false);
+      _otpController.clear();
       _setStatus('Connected successfully');
       _checkStatus();
 
@@ -359,7 +408,7 @@ class _HomePageState extends State<HomePage> {
       Sentry.captureException(
         e,
         stackTrace: stackTrace,
-        hint: Hint.withMap({'operation': 'connectWithInvitationCode'}),
+        hint: Hint.withMap({'operation': 'verifyOtp'}),
       );
     } finally {
       setState(() => _isLoading = false);
@@ -397,7 +446,8 @@ class _HomePageState extends State<HomePage> {
       setState(() {
         _isAuthorized = false;
         _isSyncing = false;
-        _invitationCodeController.clear();
+        _otpSent = false;
+        _otpController.clear();
       });
     } catch (e, stackTrace) {
       _setStatus('Error: $e');
@@ -628,23 +678,26 @@ class _HomePageState extends State<HomePage> {
             ),
           ),
           _buildTextField(
-            controller: _hostController,
-            placeholder: 'Host (e.g. https://api.example.com)',
-            icon: CupertinoIcons.globe,
-            keyboardType: TextInputType.url,
+            controller: _emailController,
+            placeholder: 'Email',
+            icon: CupertinoIcons.mail,
+            keyboardType: TextInputType.emailAddress,
           ),
-          _buildDivider(),
-          _buildTextField(
-            controller: _invitationCodeController,
-            placeholder: 'Invitation Code',
-            icon: CupertinoIcons.ticket,
-          ),
+          if (_otpSent) ...[
+            _buildDivider(),
+            _buildTextField(
+              controller: _otpController,
+              placeholder: '6-digit code',
+              icon: CupertinoIcons.lock,
+              keyboardType: TextInputType.number,
+            ),
+          ],
           Padding(
             padding: const EdgeInsets.all(20),
             child: SizedBox(
               width: double.infinity,
               child: ElevatedButton(
-                onPressed: _isLoading ? null : _connectWithInvitationCode,
+                onPressed: _isLoading ? null : (_otpSent ? _verifyOtp : _sendOtp),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: OWColors.buttonBg,
                   foregroundColor: OWColors.buttonText,
@@ -659,10 +712,25 @@ class _HomePageState extends State<HomePage> {
                         width: 20,
                         child: CircularProgressIndicator(strokeWidth: 2, color: OWColors.buttonText),
                       )
-                    : const Text('Connect', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600)),
+                    : Text(_otpSent ? 'Verify & Connect' : 'Send code',
+                        style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600)),
               ),
             ),
           ),
+          if (_otpSent && !_isLoading)
+            Padding(
+              padding: const EdgeInsets.only(left: 20, right: 20, bottom: 16),
+              child: GestureDetector(
+                onTap: () => setState(() {
+                  _otpSent = false;
+                  _otpController.clear();
+                }),
+                child: const Text(
+                  'Use a different email',
+                  style: TextStyle(fontSize: 14, color: OWColors.accent),
+                ),
+              ),
+            ),
         ],
       ),
     );

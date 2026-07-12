@@ -1,3 +1,13 @@
+## 0.0.21
+
+* **Default host**: `configure()` now defaults `host` to the hosted ForeverBetter
+  API (`OpenWearablesHealthSdkConfig.defaultHost`), so ForeverBetter apps can
+  call `OpenWearablesHealthSdk.configure()` with no arguments. Pass a custom host
+  only for self-hosted or custom OpenWearables backends.
+* **Example app**: removed the server "Host" field. Users sign in with just their
+  email; the app connects Google Health Connect (and HealthKit) data straight to
+  ForeverBetter with no server address to configure.
+
 ## 0.0.20
 
 * Bumped native iOS SDK dependency from `~> 0.12.0` to `~> 0.13.0`.

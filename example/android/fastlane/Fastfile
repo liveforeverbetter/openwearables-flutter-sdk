@@ -1,0 +1,34 @@
+default_platform(:android)
+
+platform :android do
+  desc "Verify the Play Store service account credentials are valid"
+  lane :validate do
+    validate_play_store_json_key
+  end
+
+  desc "Build a signed release AAB"
+  lane :build do
+    sh("cd ../.. && flutter build appbundle --release")
+  end
+
+  desc "Upload the AAB to a track (default: internal). Override with track:production"
+  lane :deploy do |options|
+    track = options[:track] || "internal"
+    aab = "../build/app/outputs/bundle/release/app-release.aab"
+
+    upload_to_play_store(
+      track: track,
+      aab: aab,
+      release_status: options[:draft] ? "draft" : "completed",
+      skip_upload_metadata: true,
+      skip_upload_images: true,
+      skip_upload_screenshots: true
+    )
+  end
+
+  desc "Build and deploy in one step"
+  lane :ship do |options|
+    build
+    deploy(options)
+  end
+end
