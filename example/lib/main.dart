@@ -396,7 +396,7 @@ class _HomePageState extends State<HomePage> {
         body: jsonEncode({
           'name': 'ForeverBetter Connect mobile key',
           'tier': 'free',
-          'intended_use': 'personal_agent',
+          'intended_use': 'mobile_sync',
           'enabled_endpoints': ['connections.sync'],
         }),
       );
