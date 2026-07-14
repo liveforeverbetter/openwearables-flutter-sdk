@@ -324,7 +324,7 @@ class _HomePageState extends State<HomePage> {
       }
 
       setState(() => _otpSent = true);
-      _setStatus('Enter the 6-digit code emailed to $email');
+      _setStatus('Enter the 8-digit code emailed to $email');
     } catch (e, stackTrace) {
       _setStatus('Failed to send code: $e');
       Sentry.captureException(
@@ -355,7 +355,7 @@ class _HomePageState extends State<HomePage> {
       final response = await http.post(
         verifyUrl,
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'email': email, 'token': token, 'type': 'email'}),
+        body: jsonEncode({'email': email, 'token': token}),
       );
 
       if (response.statusCode != 200) {
@@ -376,12 +376,37 @@ class _HomePageState extends State<HomePage> {
 
       final data = jsonDecode(response.body) as Map<String, dynamic>;
       final accessToken = data['access_token'] as String?;
-      final refreshToken = data['refresh_token'] as String?;
       final user = data['user'] as Map<String, dynamic>?;
       final userId = user?['id'] as String?;
 
-      if (accessToken == null || refreshToken == null || userId == null) {
+      if (accessToken == null || userId == null) {
         _setStatus('Invalid response from server');
+        return;
+      }
+
+      // The ForeverBetter API issues short-lived OTP sessions. Exchange this
+      // one for a scoped durable mobile key so the SDK can sync in the
+      // background without relying on the retired refresh-token flow.
+      final keyResponse = await http.post(
+        Uri.parse('$_apiHost/api-keys'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $accessToken',
+        },
+        body: jsonEncode({
+          'name': 'ForeverBetter Connect mobile key',
+          'tier': 'free',
+          'intended_use': 'personal_agent',
+          'enabled_endpoints': ['connections.sync'],
+        }),
+      );
+      if (keyResponse.statusCode != 201) {
+        _setStatus('Could not create secure mobile session (${keyResponse.statusCode})');
+        return;
+      }
+      final mobileApiKey = (jsonDecode(keyResponse.body) as Map<String, dynamic>)['api_key'] as String?;
+      if (mobileApiKey == null || mobileApiKey.isEmpty) {
+        _setStatus('Invalid mobile session response from server');
         return;
       }
 
@@ -391,8 +416,7 @@ class _HomePageState extends State<HomePage> {
 
       // Sign in with the received credentials
       _setStatus('Signing in...');
-      final bearerToken = accessToken.startsWith('Bearer ') ? accessToken : 'Bearer $accessToken';
-      await OpenWearablesHealthSdk.signIn(userId: userId, accessToken: bearerToken, refreshToken: refreshToken);
+      await OpenWearablesHealthSdk.signIn(userId: userId, apiKey: mobileApiKey);
 
       Sentry.configureScope((scope) => scope.setUser(SentryUser(id: userId)));
       setState(() => _otpSent = false);
