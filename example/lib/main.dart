@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:open_wearables_health_sdk/health_data_type.dart';
 import 'package:open_wearables_health_sdk/open_wearables_health_sdk.dart';
@@ -341,8 +342,8 @@ class _HomePageState extends State<HomePage> {
     final email = _emailController.text.trim();
     final token = _otpController.text.trim();
 
-    if (email.isEmpty || token.isEmpty) {
-      _setStatus('Please enter the code');
+    if (email.isEmpty || !RegExp(r'^\d{8}$').hasMatch(token)) {
+      _setStatus('Please enter the 8-digit code');
       return;
     }
 
@@ -711,9 +712,11 @@ class _HomePageState extends State<HomePage> {
             _buildDivider(),
             _buildTextField(
               controller: _otpController,
-              placeholder: '6-digit code',
+              placeholder: '8-digit code',
               icon: CupertinoIcons.lock,
               keyboardType: TextInputType.number,
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              maxLength: 8,
             ),
           ],
           Padding(
@@ -766,6 +769,8 @@ class _HomePageState extends State<HomePage> {
     required IconData icon,
     bool obscureText = false,
     TextInputType? keyboardType,
+    List<TextInputFormatter>? inputFormatters,
+    int? maxLength,
   }) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
@@ -779,6 +784,8 @@ class _HomePageState extends State<HomePage> {
               placeholder: placeholder,
               obscureText: obscureText,
               keyboardType: keyboardType,
+              inputFormatters: inputFormatters,
+              maxLength: maxLength,
               autocorrect: false,
               padding: EdgeInsets.zero,
               decoration: const BoxDecoration(),
