@@ -1,3 +1,10 @@
+## 0.0.25
+
+* **Historical re-sync**: when a user newly grants Health Connect “access past
+  data,” the app resets only its existing sync cursors and runs the selected
+  historical range once. This upgrades an earlier 30-day sync to the requested
+  range instead of continuing incrementally.
+
 ## 0.0.24
 
 * **Health Connect history**: long-range and full-history Android syncs now

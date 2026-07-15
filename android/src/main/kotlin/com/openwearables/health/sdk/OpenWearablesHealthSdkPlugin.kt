@@ -276,6 +276,7 @@ class OpenWearablesHealthSdkPlugin : FlutterPlugin, MethodCallHandler, ActivityA
         scope.launch {
             try {
                 if (selectedProviderId == "google" && (syncDaysBack == null || syncDaysBack > 30)) {
+                    val historyWasAlreadyGranted = hasHealthConnectHistoryPermission()
                     if (!requestHealthConnectHistoryPermission()) {
                         result.error(
                             "history_access_required",
@@ -283,6 +284,14 @@ class OpenWearablesHealthSdkPlugin : FlutterPlugin, MethodCallHandler, ActivityA
                             null
                         )
                         return@launch
+                    }
+                    // A previous 30-day sync has incremental anchors and a completed
+                    // initial-sync marker. Once the user extends consent, discard
+                    // only those cursors so WorkManager performs the requested
+                    // historical export rather than continuing from yesterday.
+                    if (!historyWasAlreadyGranted) {
+                        sdk.resetAnchors()
+                        Log.i(TAG, "Health Connect history access granted; reset anchors for full historical export")
                     }
                 }
                 sdk.startBackgroundSync(syncDaysBack)
@@ -390,6 +399,12 @@ class OpenWearablesHealthSdkPlugin : FlutterPlugin, MethodCallHandler, ActivityA
         } finally {
             pendingHistoryPermissionResult = null
         }
+    }
+
+    private suspend fun hasHealthConnectHistoryPermission(): Boolean {
+        if (HealthConnectClient.getSdkStatus(applicationContext) != HealthConnectClient.SDK_AVAILABLE) return false
+        return HealthPermission.PERMISSION_READ_HEALTH_DATA_HISTORY in
+            HealthConnectClient.getOrCreate(applicationContext).permissionController.getGrantedPermissions()
     }
 
     private fun handleSetSyncNotification(sdk: OpenWearablesHealthSDK, call: MethodCall, result: Result) {
