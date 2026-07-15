@@ -2,6 +2,11 @@ package com.openwearables.health.sdk
 
 import android.app.Activity
 import android.util.Log
+import androidx.activity.ComponentActivity
+import androidx.activity.result.ActivityResultLauncher
+import androidx.health.connect.client.HealthConnectClient
+import androidx.health.connect.client.PermissionController
+import androidx.health.connect.client.permission.HealthPermission
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
@@ -36,6 +41,11 @@ class OpenWearablesHealthSdkPlugin : FlutterPlugin, MethodCallHandler, ActivityA
     private var authErrorEventSink: EventChannel.EventSink? = null
 
     private var sdk: OpenWearablesHealthSDK? = null
+    private lateinit var applicationContext: android.content.Context
+    private var selectedProviderId = "google"
+    private var historyPermissionLauncher: ActivityResultLauncher<Set<String>>? = null
+    private var pendingHistoryPermissionResult: CompletableDeferred<Set<String>>? = null
+    private var historyPermissionLauncherRegistered = false
     private var lifecycleObserverRegistered = false
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
@@ -45,6 +55,7 @@ class OpenWearablesHealthSdkPlugin : FlutterPlugin, MethodCallHandler, ActivityA
 
     override fun onAttachedToEngine(flutterPluginBinding: FlutterPlugin.FlutterPluginBinding) {
         val context = flutterPluginBinding.applicationContext
+        applicationContext = context
         sdk = OpenWearablesHealthSDK.initialize(context)
 
         sdk?.logListener = { message ->
@@ -76,6 +87,7 @@ class OpenWearablesHealthSdkPlugin : FlutterPlugin, MethodCallHandler, ActivityA
         logChannel.setStreamHandler(null)
         authErrorChannel.setStreamHandler(null)
         sdk?.destroy()
+        unregisterHistoryPermissionLauncher()
         unregisterLifecycleObserver()
         scope.cancel()
         sdk = null
@@ -126,20 +138,24 @@ class OpenWearablesHealthSdkPlugin : FlutterPlugin, MethodCallHandler, ActivityA
 
     override fun onAttachedToActivity(binding: ActivityPluginBinding) {
         sdk?.setActivity(binding.activity)
+        registerHistoryPermissionLauncher(binding.activity)
     }
 
     override fun onDetachedFromActivityForConfigChanges() {
         sdk?.unregisterPermissionLauncher()
         sdk?.setActivity(null)
+        unregisterHistoryPermissionLauncher()
     }
 
     override fun onReattachedToActivityForConfigChanges(binding: ActivityPluginBinding) {
         sdk?.setActivity(binding.activity)
+        registerHistoryPermissionLauncher(binding.activity)
     }
 
     override fun onDetachedFromActivity() {
         sdk?.unregisterPermissionLauncher()
         sdk?.setActivity(null)
+        unregisterHistoryPermissionLauncher()
     }
 
     // EventChannel.StreamHandler (Log channel)
@@ -257,15 +273,25 @@ class OpenWearablesHealthSdkPlugin : FlutterPlugin, MethodCallHandler, ActivityA
 
         val syncDaysBack = call.argument<Int>("syncDaysBack")
 
-        // Return true immediately so the UI reflects "syncing" right away.
-        // The actual initial sync runs asynchronously in the background.
-        result.success(true)
-
         scope.launch {
             try {
+                if (selectedProviderId == "google" && (syncDaysBack == null || syncDaysBack > 30)) {
+                    if (!requestHealthConnectHistoryPermission()) {
+                        result.error(
+                            "history_access_required",
+                            "Allow 'access past data' in Health Connect to sync more than 30 days of history.",
+                            null
+                        )
+                        return@launch
+                    }
+                }
                 sdk.startBackgroundSync(syncDaysBack)
+                // Only report an active sync once the required Health Connect
+                // consent has been granted and the native worker is scheduled.
+                result.success(true)
             } catch (e: Exception) {
-                Log.e(TAG, "Background sync error: ${e.message}")
+                Log.e(TAG, "Background sync error: ${e.message}", e)
+                result.error("sync_failed", e.message, null)
             }
         }
     }
@@ -312,9 +338,57 @@ class OpenWearablesHealthSdkPlugin : FlutterPlugin, MethodCallHandler, ActivityA
         if (providerId == null) { result.error("bad_args", "Missing provider", null); return }
 
         if (sdk.setProvider(providerId)) {
+            selectedProviderId = providerId
             result.success(null)
         } else {
             result.error("provider_unavailable", "Provider '$providerId' is not available on this device", null)
+        }
+    }
+
+    private fun registerHistoryPermissionLauncher(activity: Activity) {
+        val componentActivity = activity as? ComponentActivity ?: return
+        if (historyPermissionLauncherRegistered) return
+        try {
+            historyPermissionLauncher = componentActivity.activityResultRegistry.register(
+                "foreverbetter_health_connect_history_permission",
+                PermissionController.createRequestPermissionResultContract()
+            ) { granted -> pendingHistoryPermissionResult?.complete(granted) }
+            historyPermissionLauncherRegistered = true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to register Health Connect history permission launcher", e)
+        }
+    }
+
+    private fun unregisterHistoryPermissionLauncher() {
+        pendingHistoryPermissionResult?.complete(emptySet())
+        pendingHistoryPermissionResult = null
+        historyPermissionLauncher?.unregister()
+        historyPermissionLauncher = null
+        historyPermissionLauncherRegistered = false
+    }
+
+    private suspend fun requestHealthConnectHistoryPermission(): Boolean {
+        if (HealthConnectClient.getSdkStatus(applicationContext) != HealthConnectClient.SDK_AVAILABLE) {
+            Log.w(TAG, "Health Connect is not available for historical-read authorization")
+            return false
+        }
+        val client = HealthConnectClient.getOrCreate(applicationContext)
+        val historyPermission = HealthPermission.PERMISSION_READ_HEALTH_DATA_HISTORY
+        val existing = client.permissionController.getGrantedPermissions()
+        if (historyPermission in existing) return true
+
+        val launcher = historyPermissionLauncher
+        if (launcher == null) {
+            Log.w(TAG, "Health Connect history permission launcher is not available")
+            return false
+        }
+        val deferred = CompletableDeferred<Set<String>>()
+        pendingHistoryPermissionResult = deferred
+        return try {
+            launcher.launch(setOf(historyPermission))
+            historyPermission in (existing + deferred.await())
+        } finally {
+            pendingHistoryPermissionResult = null
         }
     }
 

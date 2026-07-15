@@ -1,3 +1,11 @@
+## 0.0.24
+
+* **Health Connect history**: long-range and full-history Android syncs now
+  request Health Connect's explicit “access past data” permission before the
+  sync is marked active. This removes the platform's default 30-day data limit
+  for users who approve it, and reports a clear actionable error if it is
+  declined.
+
 ## 0.0.21
 
 * **Default host**: `configure()` now defaults `host` to the hosted ForeverBetter
